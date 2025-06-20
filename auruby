@@ -81,7 +81,8 @@ options = {
   force: false,
   download_only: false,
   noconfirm: false,
-  upgrade: false
+  upgrade: false,
+  clean_cache: false
 }
 
 OptionParser.new do |opts|
@@ -95,6 +96,7 @@ OptionParser.new do |opts|
     exit
   end
   opts.on("-u", "--upgrade", "Check for and install updates for all AUR packages") { |u| options[:upgrade] = u }
+  opts.on("-c", "--clean-cache", "Remove cached sources for uninstalled packages") { |c| options[:clean_cache] = c }
 end.parse!
 
 def strip_version_constraints(dep)
@@ -117,11 +119,18 @@ def prepare_cache(pkg_name, options)
   end
 end
 
+# This function is now more robust against network errors.
 def query(search_term)
   base_uri = 'https://aur.archlinux.org/rpc/v5'
-  search_term = "#{base_uri}/search/#{search_term}"
-  response = HTTParty.get(search_term, headers: {'Accept' => 'application/json'})
-  abort "Error: Failed to fetch data (HTTP #{response.code})." unless response.success?
+  search_url = "#{base_uri}/search/#{search_term}"
+  
+  begin
+    response = HTTParty.get(search_url, headers: {'Accept' => 'application/json'})
+  rescue SocketError, Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNREFUSED => e
+    abort "==> ".red.bold + "ERROR: Could not connect to the AUR.".red + "\n    Check your internet connection. (Error: #{e.class})"
+  end
+  
+  abort "==> ".red.bold + "ERROR: Failed to fetch data from AUR (HTTP #{response.code})." unless response.success?
   return response.parsed_response['results']
 end
 
@@ -246,6 +255,47 @@ def sanitize_version(version_str)
   cleaned
 end
 
+def perform_clean_cache(options)
+  puts "==> ".blue.bold + "Checking for unused cache directories..."
+
+  cached_pkgs = Dir.glob(File.join(@cache_dir, '*')).select do |entry|
+    File.directory?(entry)
+  end.map do |path|
+    File.basename(path)
+  end
+
+  if cached_pkgs.empty?
+    puts "==> ".green.bold + "Cache is already empty."
+    return
+  end
+
+  installed_pkgs = `pacman -Qmq`.split("\n")
+  installed_set = Set.new(installed_pkgs)
+
+  dirs_to_delete = cached_pkgs.select do |pkg|
+    !installed_set.include?(pkg)
+  end
+
+  if dirs_to_delete.empty?
+    puts "==> ".green.bold + "Cache is clean. No unused directories found."
+    return
+  end
+
+  puts "\n==> ".blue.bold + "The following unused cache directories will be deleted:"
+  puts dirs_to_delete.map { |d| "  - #{d}".bold }.join("\n")
+  puts "\n    Proceed with cleanup? (Y/n)".bold
+
+  if confirm?(options)
+    dirs_to_delete.each do |dir_name|
+      puts " -> Removing #{dir_name}...".grey
+      clean_cache(dir_name)
+    end
+    puts "\n==> ".green.bold + "Cache cleanup complete."
+  else
+    puts "Cleanup cancelled by user.".yellow
+  end
+end
+
 def perform_upgrade(options)
   puts "==> ".blue.bold + "Checking for AUR package updates..."
 
@@ -272,8 +322,6 @@ def perform_upgrade(options)
     aur_results = query(pkg_name)
     next if aur_results.empty?
 
-    # Find the exact match within the search results to avoid comparing
-    # against -git or other variants.
     exact_match_pkg = aur_results.find { |pkg| pkg['Name'].casecmp(pkg_name) == 0 }
 
     unless exact_match_pkg
@@ -288,7 +336,6 @@ def perform_upgrade(options)
     clean_local_v = sanitize_version(local_version_str)
 
     if clean_remote_v && clean_local_v
-      # Both versions were parsable, so we can compare them.
       if Gem::Version.new(clean_remote_v) > Gem::Version.new(clean_local_v)
         puts " Update available: ".green + "#{local_version_str} -> ".yellow + remote_version_str.green.bold
         upgrades_available << pkg_name
@@ -296,7 +343,6 @@ def perform_upgrade(options)
         puts " Up to date.".grey
       end
     else
-      # One of the versions was not standard. Inform the user.
       puts " Non-standard version, cannot auto-compare.".yellow
       puts "       Local:  #{local_version_str}".yellow
       puts "       AUR:    #{remote_version_str}".yellow
@@ -391,6 +437,8 @@ end
 
 if options[:upgrade]
   perform_upgrade(options)
+elsif options[:clean_cache]
+  perform_clean_cache(options)
 elsif !ARGV.empty?
   package_names = ARGV
   number_cols = `tput cols`.to_i
@@ -447,8 +495,9 @@ elsif !ARGV.empty?
 else
   puts "Usage: auruby [options] <package_name> [package_name2]..."
   puts "   or: auruby --upgrade"
+  puts "   or: auruby --clean-cache"
   exit 1
 end
 
-puts "\n:: ".green.bold + "auruby finished.".bold
+puts "\n==> ".green.bold + "auruby finished.".bold
 

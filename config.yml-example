@@ -3,6 +3,3 @@
 
 max_results: 15
 number_cores: 4
-
-# Put build options as a single string, just like before.
-makepkg_options: '!debug strip'
