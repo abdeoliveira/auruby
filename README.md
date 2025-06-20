@@ -10,10 +10,10 @@ A simple, lightweight, and robust command-line AUR (Arch User Repository) helper
 ## Features
 
 -   **Search and Install:** Search for packages on the AUR and install them with an interactive selection menu.
+-   **Upgrade All AUR Packages:** Check for updates for all installed AUR packages and install them.
 -   **Multi-Package Operations:** Install multiple packages in a single command (`auruby pkg1 pkg2`).
 -   **Recursive Dependency Resolution:** Automatically detects and installs AUR dependencies before building the main package.
--   **Correct Option Handling:** Intelligently merges build options from your personal config with those in a package's `PKGBUILD`.
--   **Clean YAML Configuration:** Uses a simple, safe, and easy-to-read YAML file for configuration, not an executable script.
+-   **Clean YAML Configuration:** Uses a simple, safe, and easy-to-read YAML file for configuration.
 -   **Parallel Builds:** Configurable number of CPU cores to use for faster package compilation.
 -   **Standard Flags:** Supports common flags like `--force` for re-cloning/rebuilding and `--yes` for non-interactive installation.
 
@@ -30,7 +30,7 @@ Before using `auruby`, you need to have a few things installed on your Arch Linu
 
 1.  **Clone the Repository**
     ```bash
-    git clone https://github.com/abdeoliveira/auruby
+    git clone <your-github-repo-url>
     cd auruby
     ```
 
@@ -72,9 +72,17 @@ max_results: 15
 number_cores: 4
 ```
 
-If this file is not found, the script will use safe defaults.
+**Note on Build Options:** `auruby` now respects the standard Arch Linux configuration files for `makepkg`. To customize build options (like disabling debug packages), please edit your global `/etc/makepkg.conf` file.
 
 ## Usage
+
+#### Upgrading All AUR Packages
+
+Checks all of your installed AUR packages for new versions and prompts you to install any available updates.
+
+```bash
+auruby --upgrade
+```
 
 #### Searching for and Installing a Package
 
