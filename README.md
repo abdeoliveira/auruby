@@ -70,11 +70,6 @@ max_results: 15
 
 # The number of CPU cores to use for `make`. (`nproc` is a good default).
 number_cores: 4
-
-# Custom options to pass to makepkg. This is the best place to control
-# package building behavior globally for auruby.
-# Example: Do not build debug packages, but do strip symbols from binaries.
-makepkg_options: '!debug strip'
 ```
 
 If this file is not found, the script will use safe defaults.

@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'yaml' 
+require 'yaml'
 require 'set'
 require 'optparse'
 require 'httparty'
@@ -10,7 +10,7 @@ require 'fileutils'
 # STRING COLORS
 class String
   def colorize(code1, code2)
-      "\e[#{code1}m#{self}\e[#{code2}m"
+    "\e[#{code1}m#{self}\e[#{code2}m"
   end
 
   def red
@@ -42,11 +42,12 @@ class String
   end
 end
 
+# This module will handle all configuration logic.
 module AurubyConfig
   DEFAULTS = {
     'max_results' => 10,
-    'number_cores' => `nproc`.to_i,
-    'makepkg_options' => ''
+    'number_cores' => `nproc`.to_i
+    # The 'makepkg_options' key has been removed.
   }.freeze
 
   # This reads the YAML file and merges it with defaults.
@@ -58,12 +59,13 @@ module AurubyConfig
     else
       puts "==> ".yellow + "Config file not found or empty, using defaults.".yellow
     end
-    
+
     # User settings override defaults.
     DEFAULTS.merge(user_config || {})
   end
 end
 
+# --- Main script setup ---
 home = ENV['HOME']
 config_file = File.join(home, '.config', 'auruby', 'config.yml')
 @cache_dir = File.join(home, '.cache', 'auruby')
@@ -106,7 +108,7 @@ end
 
 def more_results(num_results)
   additional = num_results - SETTINGS['max_results']
- "There are #{additional} more results...".red.bold 
+  "There are #{additional} more results...".red.bold
 end
 
 def prepare_cache(pkg_name, options)
@@ -155,10 +157,8 @@ end
 def exact_match(all_packages, search_term)
   all_packages.each do |package|
     name = package["Name"]
-    # If a match is found, return the name string immediately.
     return name if name.downcase == search_term.downcase
   end
-  # If the loop finishes without finding a match, return nil.
   return nil
 end
 
@@ -168,9 +168,8 @@ def no_results?(results)
 end
 
 def cache_exists?(name)
-  success = false
-  path = "#{@cache_dir}/#{name}"
-  success = system("cd #{path} && ls .git > /dev/null") if Dir.exist?(path)
+  # A simple check for the .git directory is a good indicator of a cloned repo.
+  File.directory?(File.join(@cache_dir, name, '.git'))
 end
 
 def clean_cache(name)
@@ -180,7 +179,10 @@ end
 
 def clone_aur(name)
   aur_base = 'https://aur.archlinux.org/'
-  system("cd #{@cache_dir} && git clone #{aur_base}/#{name}.git #{name}")
+  success = Dir.chdir(@cache_dir) do
+    system("git", "clone", "#{aur_base}/#{name}.git", name)
+  end
+  abort "==> ".red.bold + "ERROR: Failed to clone git repo for '#{name}'.".red unless success
 end
 
 def parse_pkgbuild_vars(name)
@@ -189,64 +191,36 @@ def parse_pkgbuild_vars(name)
   abort "PKGBUILD not found for '#{name}'".bold unless File.file?(build_file)
 
   begin
-    # This command now also sources the 'pkgname' and 'options' arrays
+    # This command is now simplified and no longer looks for the 'options' array.
     command = "cd #{Shellwords.escape(path)} && source PKGBUILD >/dev/null 2>&1 && " \
               "echo \"__PKGNAMES__${pkgname[@]}\" && " \
               "echo \"__DEPS__${depends[@]}\" && " \
-              "echo \"__MAKEDEPS__${makedepends[@]}\" && " \
-              "echo \"__OPTIONS__${options[@]}\"" # This line was missing
+              "echo \"__MAKEDEPS__${makedepends[@]}\""
 
     output = `bash -c #{Shellwords.escape(command)}`
 
     pknames = output.match(/__PKGNAMES__(.*)/)&.captures&.first&.split || []
     deps = output.match(/__DEPS__(.*)/)&.captures&.first&.split || []
     makedeps = output.match(/__MAKEDEPS__(.*)/)&.captures&.first&.split || []
-    pkgbuild_opts = output.match(/__OPTIONS__(.*)/)&.captures&.first&.split || []
 
-    return pknames, deps, makedeps, pkgbuild_opts
+    return pknames, deps, makedeps
   rescue
     abort "Failed to parse PKGBUILD for '#{name}'".red.bold
   end
 end
 
-def makepkg(name, options, pkgbuild_opts)
+def makepkg(name, options)
   path = File.join(@cache_dir, name)
 
-  user_opts = []
-  
-  if SETTINGS['makepkg_options'] && !SETTINGS['makepkg_options'].empty?
-    user_opts = SETTINGS['makepkg_options'].split
-  end
-
-  final_opts = pkgbuild_opts.dup
-  user_opts.each do |user_opt|
-    if user_opt.start_with?('!')
-      positive_opt = user_opt[1..]
-      final_opts.delete(positive_opt)
-    else
-      negative_opt = "!" + user_opt
-      final_opts.delete(negative_opt)
-    end
-    final_opts << user_opt
-  end
-  final_opts.uniq!
-  
-  env_parts = ["MAKEFLAGS=-j#{SETTINGS['number_cores']}"]
-  
-  unless final_opts.empty?
-    options_string = "(#{final_opts.join(' ')})"
-    env_parts << "OPTIONS=#{Shellwords.escape(options_string)}"
-  end
-  
-  env_prefix = env_parts.join(' ')
+  # The environment now only contains MAKEFLAGS.
+  env = { "MAKEFLAGS" => "-j#{SETTINGS['number_cores']}" }
 
   makepkg_cmd = "/usr/bin/makepkg -si"
   makepkg_cmd += ' --noconfirm' if options[:noconfirm]
 
-  full_command = "#{makepkg_cmd} #{env_prefix}"
-  
   Dir.chdir(path) do
-    return system(full_command)
+    # Use the simple, direct system call. It will respect /etc/makepkg.conf.
+    return system(env, makepkg_cmd)
   end
 end
 
@@ -257,17 +231,13 @@ def confirm?(options)
   !negative_answers.include?(ans)
 end
 
-def alphabet
-  [*'a'..'z']
-end
-
 def pkg_operation(options)
   value = "Install".bold
   value = "Download only".bold if options[:download_only]
   return value
 end
 
-def inform_split_pkgs(pkg_names) # Now accepts the array of names
+def inform_split_pkgs(pkg_names)
   if pkg_names.length > 1
     puts "==> ".green.bold + "NOTE:".bold + " This is a split package.".yellow
     puts "    The following packages were installed:".yellow
@@ -278,22 +248,18 @@ def inform_split_pkgs(pkg_names) # Now accepts the array of names
   end
 end
 
-
 def install_protocol(name, options)
   # --- 1. PRE-INSTALL CHECKS ---
-  # Skip if this package has already been successfully installed in this run
   if @completed_installs.include?(name)
     puts "==> ".grey.bold + "Skipping '#{name}', already handled.".bold
     return true
   end
 
-  # Check for circular dependencies (e.g., A -> B -> A)
   if @install_stack.include?(name)
     puts "==> ".red.bold + "Error: Circular dependency detected!".bold
     puts "    Install stack: #{@install_stack.join(' -> ')} -> #{name}".red
     exit 1
   end
-
   @install_stack.push(name)
 
   puts "\n==> ".blue.bold + "Processing package: ".bold + name.yellow.bold
@@ -306,21 +272,19 @@ def install_protocol(name, options)
 
   # --- 3. DEPENDENCY RESOLUTION ---
   puts "    Checking dependencies...".grey
-  pkg_names, depends, makedepends, pkgbuild_opts = parse_pkgbuild_vars(name)
+  # The call to the parser is now simpler.
+  pkg_names, depends, makedepends = parse_pkgbuild_vars(name)
   all_deps = (depends + makedepends).uniq
 
   all_deps.each do |dep|
     dep_name = strip_version_constraints(dep)
 
     if pkg_in_official_repos?(dep_name)
-      # This dependency will be handled by `makepkg -s`
       next
     elsif @completed_installs.include?(dep_name)
-      # This dependency was already installed in this session
       next
     else
       puts "    Found AUR dependency: ".yellow + dep_name.bold + ". Starting recursive install...".yellow
-      # RECURSIVE CALL: Install the dependency first.
       install_protocol(dep_name, options)
     end
   end
@@ -337,26 +301,25 @@ def install_protocol(name, options)
 
   success = false
   if confirm?(options)
-    success = makepkg(name, options, pkgbuild_opts)
+    # The call to makepkg is now simpler.
+    success = makepkg(name, options)
 
     if success
-       puts "==> ".green.bold + "Successfully built and installed '#{name}'.".bold
-      inform_split_pkgs(pkg_names) 
-      @completed_installs.add(name) # Mark as completed
+      puts "==> ".green.bold + "Successfully built and installed '#{name}'.".bold
+      inform_split_pkgs(pkg_names)
+      @completed_installs.add(name)
     else
       puts "==> ".red.bold + "Failed to build '#{name}'. Please check the output above.".bold
-      # Even on failure, we pop the stack. But we don't mark as complete.
     end
   else
     puts "    Build for '#{name}' skipped by user.".yellow
   end
 
-  @install_stack.pop # IMPORTANT: Remove from call stack after completion or failure
-
+  @install_stack.pop
   return success
 end
 
-## MAIN EXECUTION BLOCK ###
+### MAIN EXECUTION BLOCK ###
 
 package_names = ARGV
 number_cols = `tput cols`.to_i
@@ -366,9 +329,7 @@ if package_names.empty?
   exit 1
 end
 
-# List of packages to install after resolving user input.
 final_install_list = []
-
 package_names.each do |pkg_name|
   puts "==> ".magenta.bold + "Resolving package: #{pkg_name}".bold
   results = query(pkg_name)
@@ -379,17 +340,24 @@ package_names.each do |pkg_name|
   if exact_name
     puts "    Found exact match: #{exact_name}".green
     final_install_list << exact_name
-
-    # --- Call prepare_cache for the exact match ---
     prepare_cache(exact_name, options)
-
   else
-    # --- Menu presentation logic from your original script ---
     puts "    No exact match found for '#{pkg_name}'. Please choose from the list:".yellow
     sorted_results = results.sort { |a, b| b['Popularity'] <=> a['Popularity'] }
     num_results = sorted_results.length
 
     sorted_results.each.with_index do |pkg, j|
+      name = pkg['Name'].yellow.bold
+      desc = pkg['Description']
+      pop = pkg['Popularity'].round(3).to_s.green.bold
+      votes = pkg['NumVotes'].to_s.green.bold
+      index = "[#{(j + 1)}]".magenta.bold
+      indent = (j + 1).digits.length + 3
+      desc = wrap_text(desc, number_cols, indent)
+      if j < SETTINGS['max_results']
+        puts "#{index} #{name} (#{pop}/#{votes})"
+        puts desc
+      end
     end
 
     puts more_results(num_results) if num_results >= SETTINGS['max_results']
@@ -402,28 +370,22 @@ package_names.each do |pkg_name|
       if sorted_results[index]
         chosen_name = sorted_results[index]['Name']
         final_install_list << chosen_name
-
-        # --- Call prepare_cache for the user's chosen package ---
         prepare_cache(chosen_name, options)
-
       else
         puts "Invalid selection. Skipping '#{pkg_name}'...".red
       end
     else
       puts "Skipping '#{pkg_name}'...".yellow
     end
-    # --- End of menu logic ---
   end
-  puts "" # Blank line for readability between packages
+  puts ""
 end
 
-# Install all the resolved packages and their dependencies
 puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
-# Reset the completed installs set in case --force was used on an already completed package
 @completed_installs.clear if options[:force]
-
 final_install_list.uniq.each do |pkg_to_install|
   install_protocol(pkg_to_install, options)
 end
 
 puts "\n:: ".green.bold + "auruby finished.".bold
+
