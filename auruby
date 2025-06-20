@@ -47,7 +47,6 @@ module AurubyConfig
   DEFAULTS = {
     'max_results' => 10,
     'number_cores' => `nproc`.to_i
-    # The 'makepkg_options' key has been removed.
   }.freeze
 
   # This reads the YAML file and merges it with defaults.
@@ -81,7 +80,8 @@ FileUtils.mkdir_p(@cache_dir)
 options = {
   force: false,
   download_only: false,
-  noconfirm: false
+  noconfirm: false,
+  upgrade: false
 }
 
 OptionParser.new do |opts|
@@ -94,15 +94,14 @@ OptionParser.new do |opts|
     puts opts
     exit
   end
+  opts.on("-u", "--upgrade", "Check for and install updates for all AUR packages") { |u| options[:upgrade] = u }
 end.parse!
 
 def strip_version_constraints(dep)
-  # Turns "package>=1.2.3" into "package"
   dep.split(/[<>=]/).first
 end
 
 def pkg_in_official_repos?(pkg_name)
-  # Check pacman's sync database quietly for an exact package match.
   system("pacman -Ssq ^#{Shellwords.escape(pkg_name)}$ > /dev/null 2>&1")
 end
 
@@ -112,7 +111,6 @@ def more_results(num_results)
 end
 
 def prepare_cache(pkg_name, options)
-  # If '--force' is used, clear the cache for this package before doing anything else.
   if options[:force]
     puts "==> ".yellow.bold + "'--force' specified, cleaning cache for '#{pkg_name}'...".bold
     clean_cache(pkg_name)
@@ -162,13 +160,11 @@ def exact_match(all_packages, search_term)
   return nil
 end
 
-
 def no_results?(results)
   abort 'No results found' if results.empty?
 end
 
 def cache_exists?(name)
-  # A simple check for the .git directory is a good indicator of a cloned repo.
   File.directory?(File.join(@cache_dir, name, '.git'))
 end
 
@@ -191,18 +187,14 @@ def parse_pkgbuild_vars(name)
   abort "PKGBUILD not found for '#{name}'".bold unless File.file?(build_file)
 
   begin
-    # This command is now simplified and no longer looks for the 'options' array.
     command = "cd #{Shellwords.escape(path)} && source PKGBUILD >/dev/null 2>&1 && " \
               "echo \"__PKGNAMES__${pkgname[@]}\" && " \
               "echo \"__DEPS__${depends[@]}\" && " \
               "echo \"__MAKEDEPS__${makedepends[@]}\""
-
     output = `bash -c #{Shellwords.escape(command)}`
-
     pknames = output.match(/__PKGNAMES__(.*)/)&.captures&.first&.split || []
     deps = output.match(/__DEPS__(.*)/)&.captures&.first&.split || []
     makedeps = output.match(/__MAKEDEPS__(.*)/)&.captures&.first&.split || []
-
     return pknames, deps, makedeps
   rescue
     abort "Failed to parse PKGBUILD for '#{name}'".red.bold
@@ -211,15 +203,10 @@ end
 
 def makepkg(name, options)
   path = File.join(@cache_dir, name)
-
-  # The environment now only contains MAKEFLAGS.
   env = { "MAKEFLAGS" => "-j#{SETTINGS['number_cores']}" }
-
   makepkg_cmd = "/usr/bin/makepkg -si"
   makepkg_cmd += ' --noconfirm' if options[:noconfirm]
-
   Dir.chdir(path) do
-    # Use the simple, direct system call. It will respect /etc/makepkg.conf.
     return system(env, makepkg_cmd)
   end
 end
@@ -241,15 +228,103 @@ def inform_split_pkgs(pkg_names)
   if pkg_names.length > 1
     puts "==> ".green.bold + "NOTE:".bold + " This is a split package.".yellow
     puts "    The following packages were installed:".yellow
-
     pkg_names.each do |pkg_name|
       puts "    - #{pkg_name}".bold
     end
   end
 end
 
+def sanitize_version(version_str)
+  return nil unless version_str
+  
+  cleaned = version_str.split('+').first
+  cleaned.sub!(/^r/, '')
+  cleaned = cleaned.sub(/-\d+$/, '')
+  cleaned.sub!(/^v/, '')
+
+  return nil unless cleaned.match?(/^\d/)
+  cleaned
+end
+
+def perform_upgrade(options)
+  puts "==> ".blue.bold + "Checking for AUR package updates..."
+
+  begin
+    installed_pkgs = `pacman -Qmq`.split("\n")
+    if installed_pkgs.empty?
+        puts "==> ".green.bold + "No AUR packages found."
+        return
+    end
+  rescue
+    abort "==> ".red.bold + "ERROR: Could not get list of installed packages. Is pacman working?"
+  end
+
+  upgrades_available = []
+
+  installed_pkgs.each do |pkg_name|
+    print " -> Checking #{pkg_name}..."
+
+    local_info = `pacman -Qi #{pkg_name}`
+    next if local_info.empty?
+    local_version_str = local_info.match(/^Version\s+:\s+(.*)$/)&.captures&.first
+    next unless local_version_str
+
+    aur_results = query(pkg_name)
+    next if aur_results.empty?
+
+    # Find the exact match within the search results to avoid comparing
+    # against -git or other variants.
+    exact_match_pkg = aur_results.find { |pkg| pkg['Name'].casecmp(pkg_name) == 0 }
+
+    unless exact_match_pkg
+      puts " Package not found in AUR, may have been renamed or deleted.".yellow
+      next
+    end
+
+    remote_version_str = exact_match_pkg['Version']
+    next unless remote_version_str
+
+    clean_remote_v = sanitize_version(remote_version_str)
+    clean_local_v = sanitize_version(local_version_str)
+
+    if clean_remote_v && clean_local_v
+      # Both versions were parsable, so we can compare them.
+      if Gem::Version.new(clean_remote_v) > Gem::Version.new(clean_local_v)
+        puts " Update available: ".green + "#{local_version_str} -> ".yellow + remote_version_str.green.bold
+        upgrades_available << pkg_name
+      else
+        puts " Up to date.".grey
+      end
+    else
+      # One of the versions was not standard. Inform the user.
+      puts " Non-standard version, cannot auto-compare.".yellow
+      puts "       Local:  #{local_version_str}".yellow
+      puts "       AUR:    #{remote_version_str}".yellow
+      puts "       To update, you can run: ".grey + "auruby #{pkg_name} --force".bold.grey
+    end
+  end
+
+  if upgrades_available.any?
+    puts "\n==> ".blue.bold + "The following packages have updates available:"
+    puts upgrades_available.map { |p| "  - #{p}".yellow }.join("\n")
+    puts "\n    Proceed with installation? (Y/n)".bold
+
+    if confirm?(options)
+      upgrades_available.each { |pkg_name| prepare_cache(pkg_name, options) }
+      @completed_installs.clear if options[:force]
+
+      upgrades_available.each do |pkg_to_upgrade|
+        install_protocol(pkg_to_upgrade, options)
+      end
+    else
+      puts "Upgrade cancelled by user.".yellow
+    end
+  else
+    puts "\n==> ".green.bold + "All AUR packages are up to date."
+  end
+end
+
 def install_protocol(name, options)
-  # --- 1. PRE-INSTALL CHECKS ---
   if @completed_installs.include?(name)
     puts "==> ".grey.bold + "Skipping '#{name}', already handled.".bold
     return true
@@ -264,21 +339,17 @@ def install_protocol(name, options)
 
   puts "\n==> ".blue.bold + "Processing package: ".bold + name.yellow.bold
 
-  # --- 2. GET PACKAGE SOURCE ---
   unless cache_exists?(name)
     puts "    Cloning AUR repository for '#{name}'...".grey
     clone_aur(name)
   end
 
-  # --- 3. DEPENDENCY RESOLUTION ---
   puts "    Checking dependencies...".grey
-  # The call to the parser is now simpler.
   pkg_names, depends, makedepends = parse_pkgbuild_vars(name)
   all_deps = (depends + makedepends).uniq
 
   all_deps.each do |dep|
     dep_name = strip_version_constraints(dep)
-
     if pkg_in_official_repos?(dep_name)
       next
     elsif @completed_installs.include?(dep_name)
@@ -289,7 +360,6 @@ def install_protocol(name, options)
     end
   end
 
-  # --- 4. BUILD THE PACKAGE ---
   if options[:download_only]
     puts "    '--download-only' specified. Skipping build for '#{name}'.".yellow
     @install_stack.pop
@@ -301,9 +371,7 @@ def install_protocol(name, options)
 
   success = false
   if confirm?(options)
-    # The call to makepkg is now simpler.
     success = makepkg(name, options)
-
     if success
       puts "==> ".green.bold + "Successfully built and installed '#{name}'.".bold
       inform_split_pkgs(pkg_names)
@@ -321,70 +389,65 @@ end
 
 ### MAIN EXECUTION BLOCK ###
 
-package_names = ARGV
-number_cols = `tput cols`.to_i
-
-if package_names.empty?
-  puts "Usage: auruby [options] <package_name> [package_name2]...".bold
-  exit 1
-end
-
-final_install_list = []
-package_names.each do |pkg_name|
-  puts "==> ".magenta.bold + "Resolving package: #{pkg_name}".bold
-  results = query(pkg_name)
-  no_results?(results)
-
-  exact_name = exact_match(results, pkg_name)
-
-  if exact_name
-    puts "    Found exact match: #{exact_name}".green
-    final_install_list << exact_name
-    prepare_cache(exact_name, options)
-  else
-    puts "    No exact match found for '#{pkg_name}'. Please choose from the list:".yellow
-    sorted_results = results.sort { |a, b| b['Popularity'] <=> a['Popularity'] }
-    num_results = sorted_results.length
-
-    sorted_results.each.with_index do |pkg, j|
-      name = pkg['Name'].yellow.bold
-      desc = pkg['Description']
-      pop = pkg['Popularity'].round(3).to_s.green.bold
-      votes = pkg['NumVotes'].to_s.green.bold
-      index = "[#{(j + 1)}]".magenta.bold
-      indent = (j + 1).digits.length + 3
-      desc = wrap_text(desc, number_cols, indent)
-      if j < SETTINGS['max_results']
-        puts "#{index} #{name} (#{pop}/#{votes})"
-        puts desc
-      end
-    end
-
-    puts more_results(num_results) if num_results >= SETTINGS['max_results']
-
-    puts "Choose a package number for '#{pkg_name}' or type any letter to skip".bold
-    ans = $stdin.gets.chomp
-
-    if ans.match?(/^\d+$/)
-      index = ans.to_i - 1
-      if sorted_results[index]
-        chosen_name = sorted_results[index]['Name']
-        final_install_list << chosen_name
-        prepare_cache(chosen_name, options)
-      else
-        puts "Invalid selection. Skipping '#{pkg_name}'...".red
-      end
+if options[:upgrade]
+  perform_upgrade(options)
+elsif !ARGV.empty?
+  package_names = ARGV
+  number_cols = `tput cols`.to_i
+  final_install_list = []
+  package_names.each do |pkg_name|
+    puts "==> ".magenta.bold + "Resolving package: #{pkg_name}".bold
+    results = query(pkg_name)
+    no_results?(results)
+    exact_name = exact_match(results, pkg_name)
+    if exact_name
+      puts "    Found exact match: #{exact_name}".green
+      final_install_list << exact_name
+      prepare_cache(exact_name, options)
     else
-      puts "Skipping '#{pkg_name}'...".yellow
+      puts "    No exact match found for '#{pkg_name}'. Please choose from the list:".yellow
+      sorted_results = results.sort { |a, b| b['Popularity'] <=> a['Popularity'] }
+      num_results = sorted_results.length
+      sorted_results.each.with_index do |pkg, j|
+        name = pkg['Name'].yellow.bold
+        desc = pkg['Description']
+        pop = pkg['Popularity'].round(3).to_s.green.bold
+        votes = pkg['NumVotes'].to_s.green.bold
+        index = "[#{(j + 1)}]".magenta.bold
+        indent = (j + 1).digits.length + 3
+        desc = wrap_text(desc, number_cols, indent)
+        if j < SETTINGS['max_results']
+          puts "#{index} #{name} (#{pop}/#{votes})"
+          puts desc
+        end
+      end
+      puts more_results(num_results) if num_results >= SETTINGS['max_results']
+      puts "Choose a package number for '#{pkg_name}' or type any letter to skip".bold
+      ans = $stdin.gets.chomp
+      if ans.match?(/^\d+$/)
+        index = ans.to_i - 1
+        if sorted_results[index]
+          chosen_name = sorted_results[index]['Name']
+          final_install_list << chosen_name
+          prepare_cache(chosen_name, options)
+        else
+          puts "Invalid selection. Skipping '#{pkg_name}'...".red
+        end
+      else
+        puts "Skipping '#{pkg_name}'...".yellow
+      end
     end
+    puts ""
   end
-  puts ""
-end
-
-puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
-@completed_installs.clear if options[:force]
-final_install_list.uniq.each do |pkg_to_install|
-  install_protocol(pkg_to_install, options)
+  puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
+  @completed_installs.clear if options[:force]
+  final_install_list.uniq.each do |pkg_to_install|
+    install_protocol(pkg_to_install, options)
+  end
+else
+  puts "Usage: auruby [options] <package_name> [package_name2]..."
+  puts "   or: auruby --upgrade"
+  exit 1
 end
 
 puts "\n:: ".green.bold + "auruby finished.".bold
