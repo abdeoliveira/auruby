@@ -116,6 +116,14 @@ The `--yes` (or `--noconfirm`) flag will automatically answer "yes" to all promp
 auruby package-name --yes
 ```
 
+#### Clean no longer wanted cache
+
+The `--clean-cache` flag can be used to clean cached packages which are no longer installed or failed to build. 
+
+```bash
+auruby --clean-cache
+```
+
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
