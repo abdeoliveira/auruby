@@ -152,21 +152,6 @@ def wrap_text(text, num_columns, indent)
   lines.join("\n")
 end
 
-=begin
-def exact_match(all_packages, search_term)
-  found_items = []
-  all_packages.each do |package|
-    name = package["Name"]
-
-    if name.downcase == search_term.downcase
-      found_items = name
-      break
-    end
-  end
-  found_items
-end
-=end
-
 def exact_match(all_packages, search_term)
   all_packages.each do |package|
     name = package["Name"]
@@ -216,10 +201,8 @@ def parse_pkgbuild_vars(name)
     pknames = output.match(/__PKGNAMES__(.*)/)&.captures&.first&.split || []
     deps = output.match(/__DEPS__(.*)/)&.captures&.first&.split || []
     makedeps = output.match(/__MAKEDEPS__(.*)/)&.captures&.first&.split || []
-    # This line creates the variable that was causing the error
     pkgbuild_opts = output.match(/__OPTIONS__(.*)/)&.captures&.first&.split || []
 
-    # Now the return statement will work correctly
     return pknames, deps, makedeps, pkgbuild_opts
   rescue
     abort "Failed to parse PKGBUILD for '#{name}'".red.bold
@@ -229,14 +212,12 @@ end
 def makepkg(name, options, pkgbuild_opts)
   path = File.join(@cache_dir, name)
 
-  # --- Corrected logic to read from SETTINGS ---
   user_opts = []
-  # This now correctly checks the SETTINGS hash.
+  
   if SETTINGS['makepkg_options'] && !SETTINGS['makepkg_options'].empty?
     user_opts = SETTINGS['makepkg_options'].split
   end
 
-  # --- Intelligent merge logic (This part is correct) ---
   final_opts = pkgbuild_opts.dup
   user_opts.each do |user_opt|
     if user_opt.start_with?('!')
@@ -249,11 +230,7 @@ def makepkg(name, options, pkgbuild_opts)
     final_opts << user_opt
   end
   final_opts.uniq!
-  # --- End of merge logic ---
-
-  # --- Final Assembly ---
   
-  # This part now has the corrected syntax for number_cores.
   env_parts = ["MAKEFLAGS=-j#{SETTINGS['number_cores']}"]
   
   unless final_opts.empty?
@@ -364,7 +341,7 @@ def install_protocol(name, options)
 
     if success
        puts "==> ".green.bold + "Successfully built and installed '#{name}'.".bold
-      inform_split_pkgs(pkg_names) # <-- Change 'name' to 'pkg_names' here
+      inform_split_pkgs(pkg_names) 
       @completed_installs.add(name) # Mark as completed
     else
       puts "==> ".red.bold + "Failed to build '#{name}'. Please check the output above.".bold
@@ -389,7 +366,7 @@ if package_names.empty?
   exit 1
 end
 
-# This will be our list of packages to install after resolving user input.
+# List of packages to install after resolving user input.
 final_install_list = []
 
 package_names.each do |pkg_name|
@@ -403,7 +380,7 @@ package_names.each do |pkg_name|
     puts "    Found exact match: #{exact_name}".green
     final_install_list << exact_name
 
-    # --- CHANGE #1: Call prepare_cache for the exact match ---
+    # --- Call prepare_cache for the exact match ---
     prepare_cache(exact_name, options)
 
   else
@@ -413,7 +390,6 @@ package_names.each do |pkg_name|
     num_results = sorted_results.length
 
     sorted_results.each.with_index do |pkg, j|
-      # ... (the existing code to display the menu) ...
     end
 
     puts more_results(num_results) if num_results >= SETTINGS['max_results']
@@ -427,7 +403,7 @@ package_names.each do |pkg_name|
         chosen_name = sorted_results[index]['Name']
         final_install_list << chosen_name
 
-        # --- CHANGE #2: Call prepare_cache for the user's chosen package ---
+        # --- Call prepare_cache for the user's chosen package ---
         prepare_cache(chosen_name, options)
 
       else
@@ -438,10 +414,10 @@ package_names.each do |pkg_name|
     end
     # --- End of menu logic ---
   end
-  puts "" # Add a blank line for readability between packages
+  puts "" # Blank line for readability between packages
 end
 
-# Now, install all the resolved packages and their dependencies
+# Install all the resolved packages and their dependencies
 puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
 # Reset the completed installs set in case --force was used on an already completed package
 @completed_installs.clear if options[:force]
