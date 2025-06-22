@@ -255,6 +255,23 @@ def sanitize_version(version_str)
   cleaned
 end
 
+# --- New Helper Function ---
+def get_directory_size(path)
+  # Recursively find all files and sum their sizes.
+  Dir.glob(File.join(path, '**', '*')).sum do |file|
+    File.file?(file) ? File.size(file) : 0
+  end
+end
+
+# --- New Helper Function ---
+def format_bytes(bytes)
+  return '0 Bytes' if bytes.zero?
+  units = %w{Bytes KB MB GB TB}
+  exp = (Math.log(bytes) / Math.log(1024)).to_i
+  # Format to 2 decimal places for a nice output
+  "%.2f %s" % [(bytes.to_f / 1024 ** exp), units[exp]]
+end
+
 def perform_clean_cache(options)
   puts "==> ".blue.bold + "Checking for unused cache directories..."
 
@@ -281,16 +298,26 @@ def perform_clean_cache(options)
     return
   end
 
+  # --- New logic to calculate total size ---
+  total_size_to_reclaim = 0
+  dirs_to_delete.each do |dir_name|
+    path = File.join(@cache_dir, dir_name)
+    total_size_to_reclaim += get_directory_size(path)
+  end
+  formatted_size = format_bytes(total_size_to_reclaim)
+  # --- End of new logic ---
+
   puts "\n==> ".blue.bold + "The following unused cache directories will be deleted:"
-  puts dirs_to_delete.map { |d| "  - #{d}".bold }.join("\n")
-  puts "\n    Proceed with cleanup? (Y/n)".bold
+  puts dirs_to_delete.map { |d| "  - #{d}".yellow }.join("\n")
+  puts "\n    Total space to be reclaimed: ".bold + formatted_size.green.bold
+  puts "    Proceed with cleanup? (Y/n)".bold
 
   if confirm?(options)
     dirs_to_delete.each do |dir_name|
       puts " -> Removing #{dir_name}...".grey
       clean_cache(dir_name)
     end
-    puts "\n==> ".green.bold + "Cache cleanup complete."
+    puts "\n==> ".green.bold + "Cache cleanup complete. Reclaimed #{formatted_size}.".green
   else
     puts "Cleanup cancelled by user.".yellow
   end
@@ -356,8 +383,12 @@ def perform_upgrade(options)
     puts "\n    Proceed with installation? (Y/n)".bold
 
     if confirm?(options)
-      upgrades_available.each { |pkg_name| prepare_cache(pkg_name, options) }
-      @completed_installs.clear if options[:force]
+      puts "\n==> Preparing to upgrade. Cleaning caches for a fresh build..."
+      upgrades_available.each do |pkg_name|
+        clean_cache(pkg_name)
+      end
+      # Clear the memory of past installs for this session to ensure they run.
+      @completed_installs.clear 
 
       upgrades_available.each do |pkg_to_upgrade|
         install_protocol(pkg_to_upgrade, options)
@@ -500,4 +531,3 @@ else
 end
 
 puts "\n==> ".green.bold + "auruby finished.".bold
-
