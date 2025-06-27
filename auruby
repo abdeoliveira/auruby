@@ -107,11 +107,6 @@ def pkg_in_official_repos?(pkg_name)
   system("pacman -Ssq ^#{Shellwords.escape(pkg_name)}$ > /dev/null 2>&1")
 end
 
-def more_results(num_results)
-  additional = num_results - SETTINGS['max_results']
-  "There are #{additional} more results...".red.bold
-end
-
 def prepare_cache(pkg_name, options)
   if options[:force]
     puts "==> ".yellow.bold + "'--force' specified, cleaning cache for '#{pkg_name}'...".bold
@@ -123,13 +118,13 @@ end
 def query(search_term)
   base_uri = 'https://aur.archlinux.org/rpc/v5'
   search_url = "#{base_uri}/search/#{search_term}"
-  
+
   begin
     response = HTTParty.get(search_url, headers: {'Accept' => 'application/json'})
   rescue SocketError, Net::OpenTimeout, Net::ReadTimeout, Errno::ECONNREFUSED => e
     abort "==> ".red.bold + "ERROR: Could not connect to the AUR.".red + "\n    Check your internet connection. (Error: #{e.class})"
   end
-  
+
   abort "==> ".red.bold + "ERROR: Failed to fetch data from AUR (HTTP #{response.code})." unless response.success?
   return response.parsed_response['results']
 end
@@ -245,7 +240,7 @@ end
 
 def sanitize_version(version_str)
   return nil unless version_str
-  
+
   cleaned = version_str.split('+').first
   cleaned.sub!(/^r/, '')
   cleaned = cleaned.sub(/-\d+$/, '')
@@ -255,20 +250,16 @@ def sanitize_version(version_str)
   cleaned
 end
 
-# --- New Helper Function ---
 def get_directory_size(path)
-  # Recursively find all files and sum their sizes.
   Dir.glob(File.join(path, '**', '*')).sum do |file|
     File.file?(file) ? File.size(file) : 0
   end
 end
 
-# --- New Helper Function ---
 def format_bytes(bytes)
   return '0 Bytes' if bytes.zero?
   units = %w{Bytes KB MB GB TB}
   exp = (Math.log(bytes) / Math.log(1024)).to_i
-  # Format to 2 decimal places for a nice output
   "%.2f %s" % [(bytes.to_f / 1024 ** exp), units[exp]]
 end
 
@@ -298,14 +289,12 @@ def perform_clean_cache(options)
     return
   end
 
-  # --- New logic to calculate total size ---
   total_size_to_reclaim = 0
   dirs_to_delete.each do |dir_name|
     path = File.join(@cache_dir, dir_name)
     total_size_to_reclaim += get_directory_size(path)
   end
   formatted_size = format_bytes(total_size_to_reclaim)
-  # --- End of new logic ---
 
   puts "\n==> ".blue.bold + "The following unused cache directories will be deleted:"
   puts dirs_to_delete.map { |d| "  - #{d}".yellow }.join("\n")
@@ -387,8 +376,7 @@ def perform_upgrade(options)
       upgrades_available.each do |pkg_name|
         clean_cache(pkg_name)
       end
-      # Clear the memory of past installs for this session to ensure they run.
-      @completed_installs.clear 
+      @completed_installs.clear
 
       upgrades_available.each do |pkg_to_upgrade|
         install_protocol(pkg_to_upgrade, options)
@@ -464,6 +452,88 @@ def install_protocol(name, options)
   return success
 end
 
+def display_page(results, offset, limit, number_cols)
+  page_results = results.slice(offset, limit)
+  return 0 if page_results.nil? || page_results.empty?
+
+  page_results.each_with_index do |pkg, i|
+    actual_index = offset + i
+    name = pkg['Name'].yellow.bold
+    desc = pkg['Description'] || '(No description provided)'
+    pop = pkg['Popularity'].round(3).to_s.green.bold
+    votes = pkg['NumVotes'].to_s.green.bold
+    index = "[#{(actual_index + 1)}]".magenta.bold
+    indent = (actual_index + 1).digits.length + 3
+    desc = wrap_text(desc, number_cols, indent)
+
+    puts "#{index} #{name} (#{pop}/#{votes})"
+    puts desc
+  end
+
+  return page_results.length
+end
+
+def present_search_results(sorted_results, number_cols)
+  offset = 0
+  limit = SETTINGS['max_results']
+  total_results = sorted_results.length
+  page_mode = true # Start in paged mode
+
+  loop do
+    system("clear") if offset > 0 && page_mode
+
+    # Display the actual list of packages first
+    if page_mode
+      display_page(sorted_results, offset, limit, number_cols)
+    else # Show all mode
+      display_page(sorted_results, 0, total_results, number_cols)
+    end
+    
+    # Now, build and display the summary and prompt together at the bottom
+    summary_line = "==> Found #{total_results} packages. "
+    if page_mode
+      summary_line += "Showing results #{offset + 1}-#{[offset + limit, total_results].min}:"
+    else
+      summary_line += "Showing all results."
+    end
+    puts "\n" + summary_line
+
+    prompt_parts = ["Choose a package number"]
+    has_more = (offset + limit) < total_results
+
+    if page_mode && has_more
+      prompt_parts << "(m)ore"
+      prompt_parts << "(s)how all"
+    end
+    prompt_parts << "(a)bort"
+
+    puts "==> #{prompt_parts.join(', ')}".bold
+    ans = $stdin.gets.chomp.downcase
+
+    case ans
+    when /^\d+$/
+      index = ans.to_i - 1
+      if index >= 0 && index < total_results
+        return sorted_results[index]['Name'] # Return the chosen package name
+      else
+        puts "Invalid selection.".red
+        sleep(1)
+      end
+    when 's'
+      if page_mode && has_more
+        page_mode = false
+        system("clear")
+      end
+    when 'm'
+      if page_mode && has_more
+        offset += limit
+      end
+    else
+      return nil # Abort
+    end
+  end
+end
+
 ### MAIN EXECUTION BLOCK ###
 
 if options[:upgrade]
@@ -474,55 +544,40 @@ elsif !ARGV.empty?
   package_names = ARGV
   number_cols = `tput cols`.to_i
   final_install_list = []
+
   package_names.each do |pkg_name|
     puts "==> ".magenta.bold + "Resolving package: #{pkg_name}".bold
     results = query(pkg_name)
     no_results?(results)
     exact_name = exact_match(results, pkg_name)
+
     if exact_name
       puts "    Found exact match: #{exact_name}".green
       final_install_list << exact_name
       prepare_cache(exact_name, options)
     else
-      puts "    No exact match found for '#{pkg_name}'. Please choose from the list:".yellow
+      # Call the new interactive menu function
       sorted_results = results.sort { |a, b| b['Popularity'] <=> a['Popularity'] }
-      num_results = sorted_results.length
-      sorted_results.each.with_index do |pkg, j|
-        name = pkg['Name'].yellow.bold
-        desc = pkg['Description'] || '(No description provided)'
-        pop = pkg['Popularity'].round(3).to_s.green.bold
-        votes = pkg['NumVotes'].to_s
-        index = "[#{(j + 1)}]".magenta.bold
-        indent = (j + 1).digits.length + 3
-        desc = wrap_text(desc, number_cols, indent)
-        if j < SETTINGS['max_results']
-          puts "#{index} #{name} (pop: #{pop}) (votes: #{votes})"
-          puts desc
-        end
-      end
-      puts more_results(num_results) if num_results >= SETTINGS['max_results']
-      puts "Choose a package number for '#{pkg_name}' or type any letter to skip".bold
-      ans = $stdin.gets.chomp
-      if ans.match?(/^\d+$/)
-        index = ans.to_i - 1
-        if sorted_results[index]
-          chosen_name = sorted_results[index]['Name']
-          final_install_list << chosen_name
-          prepare_cache(chosen_name, options)
-        else
-          puts "Invalid selection. Skipping '#{pkg_name}'...".red
-        end
+      chosen_name = present_search_results(sorted_results, number_cols)
+
+      if chosen_name
+        final_install_list << chosen_name
+        prepare_cache(chosen_name, options)
       else
         puts "Skipping '#{pkg_name}'...".yellow
       end
     end
     puts ""
   end
-  puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
-  @completed_installs.clear if options[:force]
-  final_install_list.uniq.each do |pkg_to_install|
-    install_protocol(pkg_to_install, options)
+
+  unless final_install_list.empty?
+    puts "\n==> ".blue.bold + "Starting installation process for: #{final_install_list.uniq.join(', ')}".bold
+    @completed_installs.clear if options[:force]
+    final_install_list.uniq.each do |pkg_to_install|
+      install_protocol(pkg_to_install, options)
+    end
   end
+
 else
   puts "Usage: auruby [options] <package_name> [package_name2]..."
   puts "   or: auruby --upgrade"
