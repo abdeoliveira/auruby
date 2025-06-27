@@ -489,14 +489,14 @@ elsif !ARGV.empty?
       num_results = sorted_results.length
       sorted_results.each.with_index do |pkg, j|
         name = pkg['Name'].yellow.bold
-        desc = pkg['Description']
+        desc = pkg['Description'] || '(No description provided)'
         pop = pkg['Popularity'].round(3).to_s.green.bold
-        votes = pkg['NumVotes'].to_s.green.bold
+        votes = pkg['NumVotes'].to_s
         index = "[#{(j + 1)}]".magenta.bold
         indent = (j + 1).digits.length + 3
         desc = wrap_text(desc, number_cols, indent)
         if j < SETTINGS['max_results']
-          puts "#{index} #{name} (#{pop}/#{votes})"
+          puts "#{index} #{name} (pop: #{pop}) (votes: #{votes})"
           puts desc
         end
       end
