@@ -1,5 +1,2 @@
 # Settings for auruby.
-# This is a YAML file, which is safer and clearer than a Ruby script.
-
 max_results: 15
-number_cores: 4

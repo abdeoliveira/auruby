@@ -45,8 +45,7 @@ end
 # This module will handle all configuration logic.
 module AurubyConfig
   DEFAULTS = {
-    'max_results' => 10,
-    'number_cores' => `nproc`.to_i
+    'max_results' => 10
   }.freeze
 
   # This reads the YAML file and merges it with defaults.
@@ -207,11 +206,10 @@ end
 
 def makepkg(name, options)
   path = File.join(@cache_dir, name)
-  env = { "MAKEFLAGS" => "-j#{SETTINGS['number_cores']}" }
   makepkg_cmd = "/usr/bin/makepkg -si"
   makepkg_cmd += ' --noconfirm' if options[:noconfirm]
   Dir.chdir(path) do
-    return system(env, makepkg_cmd)
+    return system(makepkg_cmd)
   end
 end
 
@@ -322,7 +320,7 @@ def perform_upgrade(options)
         return
     end
   rescue
-    abort "==> ".red.bold + "ERROR: Could not get list of installed packages. Is pacman working?"
+    abort "==> ".red.bold + "ERROR: Could not get list of installed packages."
   end
 
   upgrades_available = []
@@ -341,7 +339,7 @@ def perform_upgrade(options)
     exact_match_pkg = aur_results.find { |pkg| pkg['Name'].casecmp(pkg_name) == 0 }
 
     unless exact_match_pkg
-      puts " Package not found in AUR, may have been renamed or deleted.".yellow
+      puts " Package not found in AUR.".yellow
       next
     end
 
